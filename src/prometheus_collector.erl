@@ -60,7 +60,7 @@ create_gauge(Name, Help, Data) ->
 ```
 """).
 
--export([enabled_collectors/0, collect_mf/3]).
+-export([enabled_collectors/0, collect_mf/3, set_metric_family_filter/1]).
 
 -ifdef(TEST).
 -export([collect_mf_to_list/1]).
@@ -69,6 +69,8 @@ create_gauge(Name, Help, Data) ->
 -export_type([collector/0, data/0, collect_mf_callback/0, metric_family_filter/0]).
 
 -compile({no_auto_import, [register/2]}).
+
+-define(METRIC_FAMILY_FILTER_KEY, {?MODULE, metric_family_filter}).
 
 -define(DEFAULT_COLLECTORS, [
     prometheus_boolean,
@@ -165,6 +167,36 @@ global_labels_callback_wrapper(GlobalLabels0, Callback) ->
         Callback(MF#'MetricFamily'{metric = Metrics})
     end.
 
+-spec metric_family_filter_callback_wrapper(Filter, Callback) -> Callback when
+    Filter :: fun((prometheus_model:'MetricFamily'()) -> dynamic()),
+    Callback :: collect_mf_callback().
+metric_family_filter_callback_wrapper(Filter, Callback) ->
+    fun(MF) ->
+        case Filter(MF) of
+            drop ->
+                ok;
+            FilteredMF = #'MetricFamily'{} ->
+                Callback(FilteredMF);
+            Other ->
+                error({invalid_metric_family_filter_result, Other})
+        end
+    end.
+
+?DOC("""
+Sets a function that is called for every `MetricFamily` collected through `collect_mf/3`.
+
+The filter returns `drop` to omit a family, or a `MetricFamily` to pass on, possibly with metrics
+removed or changed. It runs before `global_labels` are added. The filter is kept in `persistent_term`
+rather than the application env, so application env reloads do not remove it. Pass `undefined` to
+remove the filter.
+""").
+-spec set_metric_family_filter(metric_family_filter() | undefined) -> ok.
+set_metric_family_filter(undefined) ->
+    _ = persistent_term:erase(?METRIC_FAMILY_FILTER_KEY),
+    ok;
+set_metric_family_filter(Filter) when is_function(Filter, 1) ->
+    persistent_term:put(?METRIC_FAMILY_FILTER_KEY, Filter).
+
 ?DOC("Calls `Callback` for each MetricFamily of this collector.").
 -spec collect_mf(Registry, Collector, Callback) -> ok when
     Registry :: prometheus_registry:registry(),
@@ -177,28 +209,12 @@ collect_mf(Registry, Collector, Callback0) ->
             {ok, []} -> Callback0;
             {ok, GlobalLabels} -> global_labels_callback_wrapper(GlobalLabels, Callback0)
         end,
-    Callback = metric_family_filter_callback(Callback1),
+    Callback =
+        case persistent_term:get(?METRIC_FAMILY_FILTER_KEY, undefined) of
+            undefined -> Callback1;
+            Filter -> metric_family_filter_callback_wrapper(Filter, Callback1)
+        end,
     ok = Collector:collect_mf(Registry, Callback).
-
--spec metric_family_filter_callback(collect_mf_callback()) -> collect_mf_callback().
-metric_family_filter_callback(Callback) ->
-    case application:get_env(prometheus, metric_family_filter) of
-        undefined ->
-            Callback;
-        {ok, Filter} when is_function(Filter, 1) ->
-            fun(MF) ->
-                case Filter(MF) of
-                    drop ->
-                        ok;
-                    FilteredMF = #'MetricFamily'{} ->
-                        Callback(FilteredMF);
-                    Other ->
-                        error({invalid_metric_family_filter_result, Other})
-                end
-            end;
-        {ok, Other} ->
-            error({invalid_metric_family_filter, Other})
-    end.
 
 -ifdef(TEST).
 ?DOC(false).

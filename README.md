@@ -209,10 +209,14 @@ Prometheus.erl supports standard Erlang app configuration.
     Metric format: `{Type, Spec}` where `Type` is a metric type (counter, gauge, etc),
     `Spec` is a list to be passed to `Metric:declare/1`.
     Deprecated format `{Registry, Metric, Spec}` also supported.
-- `metric_family_filter` - Optional function called for every `MetricFamily` collected
-    through `prometheus_collector:collect_mf/3`. Return `drop` to omit a family or return
-    a `MetricFamily` to pass it on, possibly with metrics removed or changed. The filter
-    runs before `global_labels` are added. If unset, collection is unchanged.
+
+### Metric family filter
+
+`prometheus_collector:set_metric_family_filter/1` sets a function that is called for every
+`MetricFamily` collected through `prometheus_collector:collect_mf/3`. Return `drop` to omit a family
+or return a `MetricFamily` to pass it on, possibly with metrics removed or changed. The filter runs
+before `global_labels` are added. It is kept outside the application env, so application env
+reloads do not remove it. Pass `undefined` to remove it. If unset, collection is unchanged.
 
 ## Collectors & Exporters Conventions
 

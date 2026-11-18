@@ -119,11 +119,13 @@ metric_family_filter_runs_before_global_labels_test() ->
             prometheus:start(),
             prometheus_registry:register_collectors([?MODULE]),
             application:set_env(prometheus, global_labels, [{node, some_value3}]),
-            application:set_env(
-                prometheus,
-                metric_family_filter,
+            ok = prometheus_collector:set_metric_family_filter(
                 fun
-                    (#'MetricFamily'{name = <<"regular_mf">>, metric = [#'Metric'{label = Labels}]}) ->
+                    (
+                        #'MetricFamily'{
+                            name = <<"regular_mf">>, metric = [#'Metric'{label = Labels}]
+                        }
+                    ) ->
                         ?assertEqual(
                             [#'LabelPair'{name = <<"label">>, value = <<"regular">>}],
                             Labels
@@ -135,16 +137,54 @@ metric_family_filter_runs_before_global_labels_test() ->
             ),
             prometheus_collector:collect_mf_to_list(?MODULE)
         after
-            application:unset_env(prometheus, metric_family_filter),
+            ok = prometheus_collector:set_metric_family_filter(undefined),
             application:unset_env(prometheus, global_labels),
             prometheus_registry:deregister_collector(?MODULE)
         end,
     ?assertEqual([], get_labels(MFList, regular_mf)),
     ?assertEqual(
-        [[#'LabelPair'{name = <<"node">>, value = <<"some_value3">>}]],
+        [[[#'LabelPair'{name = <<"node">>, value = <<"some_value3">>}]]],
         get_labels(MFList, no_label_mf)
     ),
     ok.
+
+metric_family_filter_survives_env_reload_test() ->
+    Env = application:get_all_env(prometheus),
+    MFList =
+        try
+            ok = prometheus_collector:set_metric_family_filter(fun(_MF) -> drop end),
+            lists:foreach(fun({Key, _}) -> application:unset_env(prometheus, Key) end, Env),
+            prometheus_collector:collect_mf_to_list(?MODULE)
+        after
+            lists:foreach(
+                fun({Key, Value}) -> application:set_env(prometheus, Key, Value) end, Env
+            ),
+            ok = prometheus_collector:set_metric_family_filter(undefined)
+        end,
+    ?assertEqual([], MFList),
+    ok.
+
+metric_family_filter_can_be_removed_test() ->
+    ok = prometheus_collector:set_metric_family_filter(fun(_MF) -> drop end),
+    ok = prometheus_collector:set_metric_family_filter(undefined),
+    MFList = prometheus_collector:collect_mf_to_list(?MODULE),
+    ?assertEqual(
+        [[[#'LabelPair'{name = <<"label">>, value = <<"regular">>}]]],
+        get_labels(MFList, regular_mf)
+    ),
+    ok.
+
+metric_family_filter_rejects_invalid_values_test() ->
+    ?assertError(function_clause, prometheus_collector:set_metric_family_filter(not_a_function)),
+    try
+        ok = prometheus_collector:set_metric_family_filter(fun(_MF) -> not_a_metric_family end),
+        ?assertError(
+            {invalid_metric_family_filter_result, not_a_metric_family},
+            prometheus_collector:collect_mf_to_list(?MODULE)
+        )
+    after
+        ok = prometheus_collector:set_metric_family_filter(undefined)
+    end.
 
 get_labels(MFList, MFName) ->
     MFNameB = atom_to_binary(MFName, latin1),
